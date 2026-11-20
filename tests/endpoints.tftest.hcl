@@ -1,6 +1,22 @@
 mock_provider "aws" {
   override_during = plan
 
+  mock_data "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::123456789012:role/OceOperator" }
+  }
+
+  mock_data "aws_availability_zones" {
+    defaults = { names = ["us-east-2a", "us-east-2b"] }
+  }
+
+  mock_data "aws_ec2_instance_types" {
+    defaults = { instance_types = ["m6i.xlarge", "m7i.xlarge", "m6i.2xlarge", "m7i.2xlarge"] }
+  }
+
+  mock_data "aws_ec2_instance_type_offerings" {
+    defaults = { instance_types = ["m6i.xlarge", "m6i.2xlarge"] }
+  }
+
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
   }

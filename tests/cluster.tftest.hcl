@@ -1,6 +1,22 @@
 mock_provider "aws" {
   override_during = plan
 
+  mock_data "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::123456789012:role/OceOperator" }
+  }
+
+  mock_data "aws_availability_zones" {
+    defaults = { names = ["us-east-2a", "us-east-2b"] }
+  }
+
+  mock_data "aws_ec2_instance_types" {
+    defaults = { instance_types = ["m6i.xlarge", "m7i.xlarge", "m6i.2xlarge", "m7i.2xlarge"] }
+  }
+
+  mock_data "aws_ec2_instance_type_offerings" {
+    defaults = { instance_types = ["m6i.xlarge", "m6i.2xlarge"] }
+  }
+
   mock_data "aws_partition" {
     defaults = {
       partition  = "aws"
@@ -262,4 +278,48 @@ run "refuse_empty_agent_pool" {
   }
 
   expect_failures = [var.node_pools]
+}
+
+run "refuse_wrong_operator_role_path" {
+  command = plan
+
+  override_data {
+    target = data.aws_iam_role.operator
+    values = { arn = "arn:aws:iam::123456789012:role/other-path/OceOperator" }
+  }
+
+  expect_failures = [data.aws_iam_role.operator]
+}
+
+run "refuse_unavailable_zone" {
+  command = plan
+
+  override_data {
+    target = data.aws_availability_zones.available
+    values = { names = ["us-east-2a"] }
+  }
+
+  expect_failures = [aws_eks_cluster.this]
+}
+
+run "refuse_node_type_incompatible_with_amd64" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_types.amd64
+    values = { instance_types = ["m6i.xlarge", "m7i.xlarge", "m6i.2xlarge"] }
+  }
+
+  expect_failures = [aws_eks_cluster.this]
+}
+
+run "refuse_zone_without_agent_offering" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_type_offerings.zone["us-east-2b"]
+    values = { instance_types = ["m6i.xlarge"] }
+  }
+
+  expect_failures = [aws_eks_node_group.this["agents"]]
 }

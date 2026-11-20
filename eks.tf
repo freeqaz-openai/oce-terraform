@@ -1,5 +1,6 @@
 locals {
   aws_policy = "arn:${data.aws_partition.current.partition}:iam::aws:policy"
+  node_types = toset(flatten([for pool in var.node_pools : pool.instance_types]))
 
   # Terraform has no IPv4 overlap predicate. Compare the inclusive IP ranges.
   vpc_range = [
@@ -14,6 +15,53 @@ locals {
       tonumber(octet) * pow(256, 3 - index)
     ])
   ]
+}
+
+data "aws_iam_role" "operator" {
+  name = reverse(split("/", var.operator_role_arn))[0]
+
+  lifecycle {
+    postcondition {
+      condition     = self.arn == var.operator_role_arn
+      error_message = "The existing operator role does not match operator_role_arn. Check the account and the full role path."
+    }
+  }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+
+  filter {
+    name   = "zone-type"
+    values = ["availability-zone"]
+  }
+}
+
+data "aws_ec2_instance_types" "amd64" {
+  filter {
+    name   = "instance-type"
+    values = local.node_types
+  }
+
+  filter {
+    name   = "processor-info.supported-architecture"
+    values = ["x86_64"]
+  }
+}
+
+data "aws_ec2_instance_type_offerings" "zone" {
+  for_each      = setintersection(var.availability_zones, data.aws_availability_zones.available.names)
+  location_type = "availability-zone"
+
+  filter {
+    name   = "location"
+    values = [each.key]
+  }
+
+  filter {
+    name   = "instance-type"
+    values = local.node_types
+  }
 }
 
 resource "aws_iam_role" "cluster" {
@@ -72,8 +120,12 @@ resource "aws_eks_cluster" "this" {
       error_message = "The Kubernetes Service CIDR must not overlap the VPC CIDR."
     }
     precondition {
-      condition     = alltrue([for zone in var.availability_zones : startswith(zone, var.aws_region)])
-      error_message = "Both availability zones must belong to the selected region."
+      condition     = length(setsubtract(var.availability_zones, data.aws_availability_zones.available.names)) == 0
+      error_message = "Both availability zones must be available to this account in the selected region."
+    }
+    precondition {
+      condition     = length(setsubtract(local.node_types, data.aws_ec2_instance_types.amd64.instance_types)) == 0
+      error_message = "All configured node instance types must support the x86_64 EKS AMI."
     }
   }
 
@@ -93,7 +145,7 @@ resource "aws_vpc_security_group_ingress_rule" "operator" {
 
 resource "aws_eks_access_entry" "operator" {
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.operator_role_arn
+  principal_arn = data.aws_iam_role.operator.arn
   type          = "STANDARD"
 }
 
@@ -173,6 +225,16 @@ resource "aws_eks_node_group" "this" {
 
   update_config {
     max_unavailable = 1
+  }
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for zone in data.aws_ec2_instance_type_offerings.zone :
+        length(setintersection(each.value.instance_types, zone.instance_types)) > 0
+      ])
+      error_message = "Each selected availability zone must offer at least one configured instance type for the ${each.key} pool."
+    }
   }
 
   depends_on = [

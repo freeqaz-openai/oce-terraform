@@ -18,7 +18,10 @@ the images and chart you will install. Authenticate Terraform in the target
 commercial AWS account. Use an existing IAM role in that account for Kubernetes
 administration. The Terraform caller needs permission to provision the
 resources in the plan, including IAM roles and the EKS access entry for that
-operator role.
+operator role. Planning also requires `iam:GetRole`, `ec2:DescribeAvailabilityZones`,
+`ec2:DescribeInstanceTypes`, and `ec2:DescribeInstanceTypeOfferings` to verify
+the exact role, zones, and x86_64 node choices. Check EC2 launch capacity
+and service quotas separately.
 
 From this repository root, create and edit a private variables file.
 
