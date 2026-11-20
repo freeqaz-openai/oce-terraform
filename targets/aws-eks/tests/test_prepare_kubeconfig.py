@@ -228,6 +228,7 @@ class PrepareKubeconfigTest(unittest.TestCase):
 
     def test_checked_handoff_reads_and_publishes_the_verified_loopback_transport(self):
         self.profile["OCE_TEST_CHECK_ACTUAL_TUNNEL"] = "true"
+        self.profile["PYTHONSAFEPATH"] = "1"
         result = self.prepare("--check", "--tunnel-port", "18444")
 
         self.assertEqual(result.returncode, 0, result.stderr)

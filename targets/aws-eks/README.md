@@ -32,6 +32,11 @@ cluster, you can set `single_nat_gateway_zone` to a selected zone with a free sl
 Both private subnets then share one NAT gateway and one Elastic IP address.
 An outage in that zone interrupts internet access for both worker pools.
 Traffic from the other zone can incur cross-zone charges.
+
+On a serving cluster with two gateways, switching to one removes the other
+NAT gateway and releases its Elastic IP address. Schedule this change during
+a maintenance window. Existing connections through the retired gateway can
+break, and external allowlists may need the surviving gateway's address.
 [AWS NAT gateway availability](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-basics.html).
 
 From this repository checkout, enter the AWS EKS target and create a private variables file.
