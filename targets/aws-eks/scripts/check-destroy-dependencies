@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Check for EBS CSI volumes and Firewall Manager replicas before EKS destruction."""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+
+
+CLUSTER_TAG = "ebs.csi.aws.com/cluster-name"
+VPC_ARN = (
+    r"arn:aws:ec2:([a-z]{2}-[a-z]+-[0-9]+):([0-9]{12})"
+    r":vpc/(vpc-(?:[0-9a-f]{8}|[0-9a-f]{17}))"
+)
+
+
+def read_json(phase, *command):
+    env = {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"} if command[0] == "aws" else None
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+        return json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise ValueError(f"Could not {phase}. Check CLI access and retry.") from None
+
+
+def destroy_target(plan):
+    changes = plan["resource_changes"]
+    allowed_actions = {"managed": (["delete"], ["no-op"]), "data": (["read"], ["no-op"])}
+    if plan.get("errored") or plan.get("complete") is False or any(
+        change["change"]["actions"] not in allowed_actions.get(change["mode"], ())
+        for change in changes
+    ):
+        raise ValueError("Use a complete saved Terraform destroy plan with only managed resource deletions.")
+
+    def before(address, resource_type):
+        resources = [
+            change for change in changes
+            if change["mode"] == "managed" and change["type"] == resource_type
+        ]
+        if not resources:
+            return None
+        if len(resources) != 1:
+            raise ValueError("Use a saved destroy plan for one AWS EKS target.")
+        resource, = resources
+        change = resource["change"]
+        if (
+            resource["address"] != address
+            or change["actions"] != ["delete"]
+            or not isinstance(change["before"], dict)
+            or change.get("after") is not None
+        ):
+            raise ValueError("Use a saved destroy plan for one AWS EKS target.")
+        return change["before"]
+
+    vpc = before("aws_vpc.this", "aws_vpc")
+    if vpc is None:
+        raise ValueError("The saved destroy plan must delete the target's aws_vpc.this.")
+    arn = re.fullmatch(VPC_ARN, vpc["arn"])
+    if arn is None or vpc["id"] != arn[3]:
+        raise ValueError("The planned VPC needs a valid ARN and matching ID.")
+    region, account, vpc_id = arn.groups()
+    cluster = vpc["tags"]["Name"]
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?", cluster):
+        raise ValueError("The planned VPC needs the EKS cluster name in its Name tag.")
+
+    for name, expected in (("aws_region", region), ("cluster_name", cluster)):
+        if plan.get("variables", {}).get(name, {}).get("value", expected) != expected:
+            raise ValueError("The AWS region and EKS cluster inputs must match the planned VPC.")
+    eks = before("aws_eks_cluster.this", "aws_eks_cluster")
+    eks_arn = f"arn:aws:eks:{region}:{account}:cluster/{cluster}"
+    if eks is not None and (
+        eks["name"] != cluster
+        or eks["vpc_config"][0]["vpc_id"] != vpc_id
+        or eks.get("arn", eks_arn) != eks_arn
+    ):
+        raise ValueError("The planned EKS cluster must match the VPC.")
+    return region, account, vpc_id, cluster
+
+
+def items(response, key):
+    records = response[key]
+    if response.get("NextToken") or not isinstance(records, list):
+        raise ValueError("AWS returned an incomplete or unexpected inventory.")
+    return records
+
+
+def has_tag(resource, key, value):
+    return [tag["Value"] for tag in resource.get("Tags", []) if tag["Key"] == key] == [value]
+
+
+def check_destroy_dependencies(plan_path):
+    if plan_path.startswith("-"):
+        raise ValueError("Supply a saved plan path. Prefix a filename that starts with '-' with './'.")
+    plan = read_json("read the saved Terraform plan", "terraform", "show", "-json", plan_path)
+    region, account, vpc_id, cluster = destroy_target(plan)
+    aws = ("aws", "--no-cli-pager", "--region", region, "--output", "json")
+
+    caller = read_json("check the AWS caller account", *aws, "sts", "get-caller-identity")
+    if caller["Account"] != account:
+        raise ValueError("Use AWS credentials for the account in the saved plan.")
+    vpcs = items(read_json("read the planned VPC", *aws, "ec2", "describe-vpcs", "--vpc-ids", vpc_id), "Vpcs")
+    if (
+        len(vpcs) != 1
+        or vpcs[0]["VpcId"] != vpc_id
+        or vpcs[0]["OwnerId"] != account
+        or not has_tag(vpcs[0], "Name", cluster)
+    ):
+        raise ValueError("The current VPC identity and Name tag must match the saved plan.")
+
+    volumes = items(read_json(
+        "list EBS CSI volumes", *aws, "ec2", "describe-volumes",
+        "--filters", f"Name=tag:{CLUSTER_TAG},Values={cluster}",
+    ), "Volumes")
+    groups = items(read_json(
+        "list security groups in the planned VPC", *aws, "ec2", "describe-security-groups",
+        "--filters", f"Name=vpc-id,Values={vpc_id}",
+    ), "SecurityGroups")
+
+    volume_rows = []
+    for volume in volumes:
+        volume_id, state, size = volume["VolumeId"], volume["State"], volume["Size"]
+        if (
+            not has_tag(volume, CLUSTER_TAG, cluster)
+            or not re.fullmatch(r"vol-(?:[0-9a-f]{8}|[0-9a-f]{17})", volume_id)
+            or state not in ("creating", "available", "in-use", "deleting", "deleted", "error")
+            or type(size) is not int or size <= 0
+        ):
+            raise ValueError("AWS returned an unexpected EBS CSI volume record.")
+        volume_rows.append((volume_id, state, size))
+
+    replica_ids = []
+    for group in groups:
+        group_id = group["GroupId"]
+        if group["VpcId"] != vpc_id or not re.fullmatch(r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})", group_id):
+            raise ValueError("AWS returned an unexpected security group record.")
+        if (
+            group["GroupName"].startswith("FMManagedSecurityGroup")
+            or group["Description"].casefold().startswith("fms managed security group")
+        ):
+            replica_ids.append(group_id)
+
+    if volume_rows:
+        print("EBS CSI volumes may outlive the cluster. Confirm retention or cleanup with each volume owner.")
+        for volume_id, state, size in sorted(volume_rows):
+            print(f"  {volume_id} ({state}, {size} GiB)")
+    if replica_ids:
+        print("Firewall Manager replicas can block VPC deletion. Ask the Firewall Manager administrator to review them.")
+        for group_id in sorted(replica_ids):
+            print(f"  {group_id}")
+    if volume_rows or replica_ids:
+        return 1
+    print("No EBS CSI volume or Firewall Manager replica matches in the two inventories.")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("plan", help="Path to a saved Terraform destroy plan")
+    args = parser.parse_args()
+    try:
+        return check_destroy_dependencies(args.plan)
+    except (AttributeError, KeyError, TypeError, IndexError):
+        parser.exit(1, "The saved plan or AWS metadata does not match the expected EKS format.\n")
+    except ValueError as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -184,11 +184,22 @@ Keep the receipt with the original run directory.
 Verify the account, region, cluster, and original state. Remove OCE workloads,
 then settle their load balancers and retained EBS volumes with their owners.
 Handle PostgreSQL cleanup through its own workflow. From the AWS EKS target directory,
-review and apply a saved destruction plan.
+save a destruction plan and check for remaining EBS CSI volumes and Firewall Manager
+replicas. Use credentials for the plan's account. The check reads the VPC, volumes,
+and security groups. A nonzero exit means the check found matching resources or
+could not complete. Confirm volume retention with each owner and ask the Firewall
+Manager administrator to review reported replicas. An empty inventory covers only
+these two checks. Review the plan before applying it.
 
 ```bash
 cd "$TF_TARGET_DIR"
 terraform plan -destroy -out=destroy.tfplan
+./scripts/check-destroy-dependencies destroy.tfplan
+```
+
+After confirming retention and cleanup with the owners, review the deletions and apply the saved plan.
+
+```bash
 terraform apply destroy.tfplan
 ```
 
