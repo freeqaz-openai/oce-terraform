@@ -201,6 +201,37 @@ run "private_cluster" {
   }
 }
 
+run "share_one_nat_gateway_when_requested" {
+  command = plan
+
+  variables {
+    single_nat_gateway_zone = "us-east-2b"
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_nat_gateway.this)) == toset(["us-east-2b"]) &&
+      toset(keys(aws_eip.nat)) == toset(["us-east-2b"]) &&
+      toset(keys(aws_route.private_internet)) == toset(["us-east-2a", "us-east-2b"]) &&
+      alltrue([
+        for route in values(aws_route.private_internet) :
+        route.nat_gateway_id == aws_nat_gateway.this["us-east-2b"].id
+      ])
+    )
+    error_message = "The opt-in topology must keep both private routes and use exactly one gateway and address."
+  }
+}
+
+run "refuse_single_nat_gateway_outside_cluster_zones" {
+  command = plan
+
+  variables {
+    single_nat_gateway_zone = "us-east-2c"
+  }
+
+  expect_failures = [var.single_nat_gateway_zone]
+}
+
 run "restrict_operator_access_and_enable_strict_network_policy" {
   command = plan
 

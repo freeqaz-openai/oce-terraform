@@ -30,6 +30,17 @@ variable "availability_zones" {
   }
 }
 
+variable "single_nat_gateway_zone" {
+  description = "Optional selected availability zone for a single NAT gateway shared by both private subnets. The default creates one NAT gateway per zone."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.single_nat_gateway_zone == null ? true : contains(var.availability_zones, var.single_nat_gateway_zone)
+    error_message = "The single NAT gateway zone must be one of the cluster availability zones."
+  }
+}
+
 variable "operator_role_arn" {
   description = "Existing IAM role in the cluster account for Kubernetes installation and administration."
   type        = string

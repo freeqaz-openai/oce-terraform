@@ -4,6 +4,9 @@ cluster_name       = "oce-evaluation"
 availability_zones = ["us-east-2a", "us-east-2b"]
 operator_role_arn  = "arn:aws:iam::123456789012:role/ReplaceWithOceOperator"
 
+# Optional for disposable clusters. Both zones share one NAT gateway.
+# single_nat_gateway_zone = "us-east-2b"
+
 # Keep this empty when your operator can reach the private endpoint.
 # For public access, replace it with your operator's approved stable egress CIDRs.
 api_public_access_cidrs = []

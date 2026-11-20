@@ -1,5 +1,9 @@
 locals {
   zone_indices = { for index, zone in sort(tolist(var.availability_zones)) : zone => index }
+  nat_gateway_subnets = {
+    for zone, subnet in aws_subnet.public : zone => subnet
+    if var.single_nat_gateway_zone == null || zone == var.single_nat_gateway_zone
+  }
 }
 
 resource "aws_vpc" "this" {
@@ -58,13 +62,13 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_eip" "nat" {
-  for_each = aws_subnet.public
+  for_each = local.nat_gateway_subnets
 
   domain = "vpc"
 }
 
 resource "aws_nat_gateway" "this" {
-  for_each = aws_subnet.public
+  for_each = local.nat_gateway_subnets
 
   subnet_id     = each.value.id
   allocation_id = aws_eip.nat[each.key].id
@@ -85,7 +89,7 @@ resource "aws_route" "private_internet" {
 
   route_table_id         = aws_route_table.private[each.key].id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.this[each.key].id
+  nat_gateway_id         = aws_nat_gateway.this[coalesce(var.single_nat_gateway_zone, each.key)].id
 }
 
 resource "aws_route_table_association" "private" {

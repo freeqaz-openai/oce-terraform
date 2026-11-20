@@ -23,6 +23,20 @@ operator role. Planning also requires `iam:GetRole`, `ec2:DescribeAvailabilityZo
 the exact role, zones, and x86_64 node choices. Check EC2 launch capacity
 and service quotas separately.
 
+Before planning, check the account's NAT gateway quota in each selected zone
+and its Elastic IP address quota in the Region. In the VPC console, use each
+existing gateway's subnet to identify its zone. Pending, available, and
+deleting NAT gateways count toward the quota. The default plan needs one free
+slot in each zone and two Elastic IP addresses.
+[AWS NAT gateway quotas and troubleshooting](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-troubleshooting.html#nat-gateway-troubleshooting-quota).
+
+For a new cluster, select zones with capacity. For a disposable or cost-sensitive
+cluster, you can set `single_nat_gateway_zone` to a selected zone with a free slot.
+Both private subnets then share one NAT gateway and one Elastic IP address.
+An outage in that zone interrupts internet access for both worker pools.
+Traffic from the other zone can incur cross-zone charges.
+[AWS NAT gateway availability](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-basics.html).
+
 From this repository checkout, enter the AWS EKS target and create a private variables file.
 
 ```bash
