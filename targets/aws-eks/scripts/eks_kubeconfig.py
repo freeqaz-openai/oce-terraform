@@ -1,6 +1,8 @@
 """Validate the exact EKS target and credential shared by the reference commands."""
 
+import argparse
 import os
+import re
 
 
 def require_kuberc_opt_out():
@@ -12,7 +14,29 @@ def require_kuberc_opt_out():
         )
 
 
-def verify_eks_view(view, context, arn, endpoint, ca):
+def parse_tunnel_port(value):
+    if re.fullmatch(r"[0-9]{1,5}", value):
+        port = int(value)
+        # The OCE address collector requires a port after URL normalization.
+        if 1 <= port <= 65535 and port != 443:
+            return port
+    raise argparse.ArgumentTypeError("Use a nondefault HTTPS port (1–65535, except 443).")
+
+
+def eks_connection(endpoint, ca, *, tunnel_port=None):
+    if tunnel_port is None:
+        return {"server": endpoint, "certificate-authority-data": ca}
+    match = re.fullmatch(r"https://([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)", endpoint)
+    if not match:
+        raise ValueError("A tunnel needs the verified EKS HTTPS hostname.")
+    return {
+        "server": f"https://127.0.0.1:{tunnel_port}",
+        "certificate-authority-data": ca,
+        "tls-server-name": match[1].lower(),
+    }
+
+
+def verify_eks_view(view, context, arn, endpoint, ca, *, tunnel_port=None):
     """Accept the minified view of a kubeconfig from AWS CLI v2."""
     scopes = arn.split(":", 5)
     region = scopes[3]
@@ -28,7 +52,7 @@ def verify_eks_view(view, context, arn, endpoint, ca):
             view["current-context"] == context_entry["name"] == context
             and selected["name"] == context_entry["context"]["cluster"] == arn
             and user_entry["name"] == context_entry["context"]["user"]
-            and selected["cluster"] == {"server": endpoint, "certificate-authority-data": ca}
+            and selected["cluster"] == eks_connection(endpoint, ca, tunnel_port=tunnel_port)
             and set(user) == {"exec"}
             and token["command"] == "aws"
             and token["apiVersion"] == "client.authentication.k8s.io/v1beta1"

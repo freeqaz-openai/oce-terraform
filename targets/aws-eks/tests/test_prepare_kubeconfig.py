@@ -17,6 +17,11 @@ ARN = f"arn:aws:eks:{REGION}:123456789012:cluster/{NAME}"
 CONTEXT = f"oce-{NAME}"
 ENDPOINT = "https://ABC0123.gr7.eks.us-east-2.amazonaws.com"
 CA = base64.b64encode(b"synthetic public CA data").decode()
+TUNNEL = {
+    "server": "https://127.0.0.1:18444",
+    "tls-server-name": "abc0123.gr7.eks.us-east-2.amazonaws.com",
+    "certificate-authority-data": CA,
+}
 
 # The subprocess fixture implements the documented CLI shapes. kubectl is real and
 # parses the supplied kubeconfig without connecting to a cluster.
@@ -42,6 +47,13 @@ elif command == "kubectl":
     if args[0] == "config" or os.environ.get("OCE_TEST_REAL_CLUSTER_READ") == "true":
         # Let stock kubectl parse the file we may later use for cluster reads.
         os.execv(os.environ["OCE_TEST_REAL_KUBECTL"], [os.environ["OCE_TEST_REAL_KUBECTL"], *sys.argv[1:]])
+    if "OCE_TEST_CHECK_ACTUAL_TUNNEL" in os.environ:
+        view = json.loads(Path(sys.argv[2]).read_text())
+        assert view["clusters"][0]["cluster"] == {
+            "server": "https://127.0.0.1:18444",
+            "tls-server-name": "abc0123.gr7.eks.us-east-2.amazonaws.com",
+            "certificate-authority-data": json.loads((root / "output.json").read_text())["certificate_authority_data"],
+        }
     phases = {
         ("get", "nodes", "-o", "json"): "nodes",
         ("-n", "kube-system", "get", "daemonset/aws-node", "daemonset/kube-proxy", "daemonset/ebs-csi-node",
@@ -213,6 +225,40 @@ class PrepareKubeconfigTest(unittest.TestCase):
         self.assertIn("does not match Terraform", result.stderr)
         self.assertFalse(self.destination.exists())
         self.assertEqual(self.calls(), ["output", "describe"])
+
+    def test_checked_handoff_reads_and_publishes_the_verified_loopback_transport(self):
+        self.profile["OCE_TEST_CHECK_ACTUAL_TUNNEL"] = "true"
+        result = self.prepare("--check", "--tunnel-port", "18444")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), CONTEXT)
+        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o600)
+        view = json.loads(self.destination.read_text())
+        self.assertEqual(view["clusters"], [{"name": ARN, "cluster": TUNNEL}])
+        self.assertEqual(view["contexts"], self.generated["contexts"])
+        token = view["users"][0]["user"]["exec"]
+        self.assertEqual(token["command"], "aws")
+        self.assertEqual(token["args"], self.generated["users"][0]["user"]["exec"]["args"])
+        self.assertEqual(self.calls(), ["output", "describe", "generated", "nodes", "workloads", "storage"])
+
+    def test_refuse_an_aws_generated_loopback_config_before_deriving_tunnel(self):
+        # Verify the AWS-supplied server before replacing it with loopback.
+        self.generated["clusters"][0]["cluster"] = TUNNEL.copy()
+        result = self.prepare("--check", "--tunnel-port", "18444")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match the verified EKS cluster", result.stderr)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(self.calls(), ["output", "describe", "generated"])
+
+    def test_refuse_invalid_or_default_tunnel_port_before_commands(self):
+        for port in ("0", "443", "65536", "443/other"):
+            with self.subTest(port=port):
+                result = self.prepare("--tunnel-port", port)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("nondefault HTTPS port", result.stderr)
+                self.assertFalse(self.destination.exists())
+                self.assertEqual(self.calls(), [])
 
     def test_refuse_generated_kubeconfig_with_a_different_ca(self):
         cluster = self.generated["clusters"][0]["cluster"]

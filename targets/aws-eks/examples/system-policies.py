@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from eks_kubeconfig import require_kuberc_opt_out, verify_eks_view
+from eks_kubeconfig import parse_tunnel_port, require_kuberc_opt_out, verify_eks_view
 
 
 def host_cidrs(values, *, amazon_resolver=False):
@@ -78,7 +78,10 @@ def system_inputs(args):
     kube = ("kubectl", "--kubeconfig", str(args.kubeconfig), "--context", args.context,
             "--request-timeout=15s")
     config = read_json(*kube, "config", "view", "--minify", "--raw", "-o", "json")
-    verify_eks_view(config, args.context, network["cluster_arn"], network["endpoint"], network["ca_data"])
+    verify_eks_view(
+        config, args.context, network["cluster_arn"], network["endpoint"], network["ca_data"],
+        tunnel_port=args.tunnel_port,
+    )
     # Pin the inspected view so a subsequent read cannot load a changed exec plugin or server.
     with tempfile.TemporaryDirectory(prefix="oce-system-policies-") as directory:
         staged = Path(directory) / "kubeconfig"
@@ -98,6 +101,7 @@ def main():
     parser.add_argument("--inventory", required=True, type=Path, help="Fresh OCE EKS address inventory JSON file")
     parser.add_argument("--kubeconfig", required=True, type=Path, help="Private kubeconfig from prepare-kubeconfig")
     parser.add_argument("--context", required=True, help="Context printed by prepare-kubeconfig")
+    parser.add_argument("--tunnel-port", type=parse_tunnel_port, metavar="PORT", help="Use the explicitly selected IPv4 loopback tunnel")
     args = parser.parse_args()
 
     try:

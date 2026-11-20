@@ -88,7 +88,8 @@ jq -n --arg context "$CONTEXT" --arg arn "$EKS_CLUSTER_ARN" --argjson api "$API_
 
 The renderer verifies the inventory and kubeconfig against applied Terraform
 state. It reads the live DNS Service address and uses the Terraform output for
-the AWS endpoints and VPC resolver.
+the AWS endpoints and VPC resolver. If you used `--tunnel-port PORT` when
+preparing the kubeconfig, pass that same argument to the renderer.
 
 ```bash
 python3 examples/system-policies.py --inventory "$RUN_DIR/eks-addresses.json" \

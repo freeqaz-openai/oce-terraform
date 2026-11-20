@@ -80,7 +80,7 @@ class SystemPolicyTest(unittest.TestCase):
             "clusterIP": "172.20.0.10",
         }
 
-    def render(self, opt_out=True, token_command="aws"):
+    def render(self, *args, opt_out=True, token_command="aws"):
         config = {
             "current-context": CONTEXT,
             "clusters": [{"name": ARN, "cluster": self.connection}],
@@ -106,7 +106,7 @@ class SystemPolicyTest(unittest.TestCase):
         if opt_out:
             env["KUBECTL_KUBERC"] = "false"
         return subprocess.run(
-            [sys.executable, EXAMPLE, "--inventory", "inventory.json", "--kubeconfig", "config", "--context", CONTEXT],
+            [sys.executable, EXAMPLE, "--inventory", "inventory.json", "--kubeconfig", "config", "--context", CONTEXT, *args],
             cwd=self.root, env=env,
             capture_output=True, check=False, text=True, timeout=10,
         )
@@ -148,6 +148,50 @@ class SystemPolicyTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertEqual((self.root / "calls").read_text().splitlines(), ["network", "config"])
+
+    def test_accepts_the_explicitly_selected_tunnel_for_the_pinned_dns_read(self):
+        self.connection.update({
+            "server": "https://127.0.0.1:18444",
+            "tls-server-name": "example.eks.us-east-2.amazonaws.com",
+        })
+        result = self.render("--tunnel-port", "18444")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(json.loads(result.stdout)["items"]), 3)
+        self.assertEqual((self.root / "calls").read_text().splitlines(), ["network", "config", "dns"])
+
+    def test_refuses_tunnel_without_the_explicit_port_before_live_dns_read(self):
+        self.connection.update({
+            "server": "https://127.0.0.1:18444",
+            "tls-server-name": "example.eks.us-east-2.amazonaws.com",
+        })
+        result = self.render()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual((self.root / "calls").read_text().splitlines(), ["network", "config"])
+
+    def test_refuses_tunnel_with_changed_transport_before_live_dns_read(self):
+        expected = {
+            "server": "https://127.0.0.1:18444",
+            "tls-server-name": "example.eks.us-east-2.amazonaws.com",
+            "certificate-authority-data": "Y2E=",
+        }
+        for change in (
+            {"server": "https://127.0.0.1:18445"},
+            {"server": "http://127.0.0.1:18444"},
+            {"server": "https://10.42.1.10:18444"},
+            {"tls-server-name": "wrong.example.com"},
+            {"certificate-authority-data": "Y2hhbmdlZA=="},
+            {"proxy-url": "http://proxy.example.invalid"},
+            {"insecure-skip-tls-verify": True},
+        ):
+            with self.subTest(change=change):
+                self.connection = {**expected, **change}
+                result = self.render("--tunnel-port", "18444")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual((self.root / "calls").read_text().splitlines(), ["network", "config"])
 
     def test_refuses_credentials_without_explicit_preference_opt_out(self):
         result = self.render(opt_out=False)

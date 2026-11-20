@@ -77,6 +77,15 @@ can reach the Kubernetes API. Keep the run directory for later verification
 and cleanup. The handoff compares the applied Terraform output with the active
 EKS cluster, then writes a new private kubeconfig. It prints the context name.
 
+If you use AWS Systems Manager Session Manager for private access, start
+port forwarding through a managed node that can reach the EKS API. Forward
+the EKS endpoint hostname on port 443 to a local port other than 443. Add
+`--tunnel-port PORT` to `prepare-kubeconfig` with that local port. Kubectl
+connects to `127.0.0.1` and still verifies the EKS hostname and certificate
+authority. Keep the session running and configure any local proxy to bypass
+`127.0.0.1`.
+[Start a Session Manager port-forwarding session to a remote host](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-sessions-start.html#sessions-remote-port-forwarding).
+
 ```bash
 umask 077
 run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
@@ -137,7 +146,8 @@ The check requires the credential owner's permission to use kubectl without
 preferences. For an authorized session, set `KUBECTL_KUBERC=false` for the
 check. If your policy requires kubectl preferences, use your approved
 infrastructure workflow. Complete the traffic, admission, and volume checks
-before installing OCE.
+before installing OCE. When using a tunnel, pass the same `--tunnel-port PORT`
+to the foundation check.
 
 ```bash
 OCC_INPUT_DIRECTORY=$(mktemp -d "$RUN_DIR/occ.XXXXXXXX")
