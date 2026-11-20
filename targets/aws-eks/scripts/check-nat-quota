@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Check zonal NAT gateway capacity for a saved EKS reference plan."""
+
+import argparse
+from collections import Counter
+import json
+import os
+import re
+import subprocess
+
+
+def read_json(phase, *command):
+    env = {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"} if command[0] == "aws" else None
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+        return json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise ValueError(f"Could not {phase}. Check CLI access and retry.") from None
+
+
+def check_nat_capacity(plan_path):
+    if plan_path.startswith("-"):
+        raise ValueError("Supply a saved plan path. Prefix a filename that starts with '-' with './'.")
+    plan = read_json("read the saved Terraform plan", "terraform", "show", "-json", plan_path)
+    resources = plan["configuration"]["root_module"]["resources"]
+    if not any(resource["address"] == "aws_nat_gateway.this" for resource in resources):
+        raise ValueError("Use a saved plan for the AWS EKS target.")
+    # A delete-then-create replacement in the same zone releases its original slot.
+    creates = Counter(
+        resource["index"]
+        for resource in plan.get("resource_changes", [])
+        if resource["type"] == "aws_nat_gateway"
+        and resource["name"] == "this"
+        and "module_address" not in resource
+        and resource["change"]["actions"][0] == "create"
+    )
+    if not creates:
+        print("No additional zonal NAT gateways in the plan.")
+        return
+
+    variables = plan["variables"]
+    region = variables["aws_region"]["value"]
+    role_arn = variables["operator_role_arn"]["value"]
+    zones = variables["availability_zones"]["value"]
+    if (
+        not re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]+", region)
+        or not re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/.+", role_arn)
+        or any(zone not in zones for zone in creates)
+    ):
+        raise ValueError("The saved plan needs the EKS target's account, region, and gateway zones.")
+    aws = ("aws", "--no-cli-pager", "--region", region, "--output", "json")
+    account = read_json("check the AWS caller account", *aws, "sts", "get-caller-identity")["Account"]
+    if account != role_arn.split(":")[4]:
+        raise ValueError("Use AWS credentials for the account in the saved plan.")
+    quota = int(read_json(
+        "read the zonal NAT quota", *aws, "service-quotas", "get-service-quota",
+        "--service-code", "vpc", "--quota-code", "L-FE5A380F", "--query", "Quota.Value",
+    ))
+    subnets = read_json(
+        "list zonal NAT gateways", *aws, "ec2", "describe-nat-gateways",
+        "--filter", "Name=state,Values=pending,available,deleting",
+        "--query", "NatGateways[?AvailabilityMode != 'regional'].SubnetId",
+    )
+    subnet_zones = {}
+    subnet_ids = sorted(set(subnets))
+    for start in range(0, len(subnet_ids), 100):
+        records = read_json(
+            "locate NAT gateways by Availability Zone", *aws, "ec2", "describe-subnets",
+            "--subnet-ids", *subnet_ids[start:start + 100],
+            "--query", "Subnets[].{id:SubnetId,zone:AvailabilityZone}",
+        )
+        subnet_zones.update({record["id"]: record["zone"] for record in records})
+    occupied = Counter(subnet_zones[subnet] for subnet in subnets)
+
+    for zone in sorted(creates):
+        print(f"{zone}: {occupied[zone]}/{quota} zonal NAT slots used, {creates[zone]} requested")
+    if any(occupied[zone] + count > quota for zone, count in creates.items()):
+        raise ValueError(
+            "The plan exceeds the zonal NAT quota. Check for pending or deleting gateways, "
+            "select zones with free slots, or select one gateway zone for a disposable cluster. "
+            "Create a new plan before applying."
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("plan", help="Path to a saved Terraform plan")
+    args = parser.parse_args()
+    try:
+        check_nat_capacity(args.plan)
+    except (KeyError, TypeError, IndexError):
+        parser.exit(1, "The saved plan or AWS metadata does not match the expected EKS format.\n")
+    except ValueError as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -23,12 +23,9 @@ operator role. Planning also requires `iam:GetRole`, `ec2:DescribeAvailabilityZo
 the exact role, zones, and x86_64 node choices. Check EC2 launch capacity
 and service quotas separately.
 
-Before planning, check the account's NAT gateway quota in each selected zone
-and its Elastic IP address quota in the Region. In the VPC console, use each
-existing gateway's subnet to identify its zone. Pending, available, and
-deleting NAT gateways count toward the quota. The default plan needs one free
-slot in each zone and two Elastic IP addresses.
-[AWS NAT gateway quotas and troubleshooting](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-troubleshooting.html#nat-gateway-troubleshooting-quota).
+The default plan needs one free zonal NAT slot in each selected zone and two
+Elastic IP addresses in the Region. Check the regional Elastic IP quota before
+applying.
 
 For a new cluster, select zones with capacity. For a disposable or cost-sensitive
 cluster, you can set `single_nat_gateway_zone` to a selected zone with a free slot.
@@ -52,7 +49,17 @@ terraform init -lockfile=readonly
 terraform validate
 aws sts get-caller-identity
 terraform plan -out=foundation.tfplan
+./scripts/check-nat-quota foundation.tfplan
 ```
+
+The saved-plan check requires
+`servicequotas:GetServiceQuota`, `ec2:DescribeNatGateways`, and
+`ec2:DescribeSubnets` in the plan's AWS account. It compares additional gateways
+in the plan with current usage. Pending, available, and deleting gateways count
+toward the quota. If a zone lacks capacity, select zones with free slots or use
+the single-gateway option, then save and check a new plan. Other concurrent
+changes can still consume the remaining capacity.
+[AWS NAT gateway quotas and troubleshooting](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-troubleshooting.html#nat-gateway-troubleshooting-quota).
 
 Check the account, region, availability zones, IP ranges, node counts, and
 operator role before approval. Review charges for EKS, EC2 nodes, NAT gateways,
