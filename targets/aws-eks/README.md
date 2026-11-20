@@ -155,11 +155,11 @@ settings, add-on rollouts, and the encrypted default StorageClass. Review the
 reported node counts by zone against your volume placement.
 
 The check requires the credential owner's permission to use kubectl without
-preferences. For an authorized session, set `KUBECTL_KUBERC=false` for the
-check. If your policy requires kubectl preferences, use your approved
-infrastructure workflow. Complete the traffic, admission, and volume checks
-before installing OCE. When using a tunnel, pass the same `--tunnel-port PORT`
-to the foundation check.
+preferences. For an authorized session, run `export KUBECTL_KUBERC=false` in
+the same operator shell before the foundation check. If your policy requires
+kubectl preferences, use your approved infrastructure workflow. Complete the
+traffic, admission, and volume checks before installing OCE. When using a tunnel,
+pass the same `--tunnel-port PORT` to the foundation check.
 
 ```bash
 OCC_INPUT_DIRECTORY=$(mktemp -d "$RUN_DIR/occ.XXXXXXXX")
