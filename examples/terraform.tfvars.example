@@ -1,0 +1,13 @@
+# Replace these fields before planning. Select two available zones in the region.
+aws_region         = "us-east-2"
+cluster_name       = "oce-evaluation"
+availability_zones = ["us-east-2a", "us-east-2b"]
+operator_role_arn  = "arn:aws:iam::123456789012:role/ReplaceWithOceOperator"
+
+# Keep this empty when your operator can reach the private endpoint.
+# For public access, replace it with your operator's approved stable egress CIDRs.
+api_public_access_cidrs = []
+
+# After preparing and testing policies for system services, set this to true
+# and apply the change before starting any OCE workloads.
+strict_network_policy = false
