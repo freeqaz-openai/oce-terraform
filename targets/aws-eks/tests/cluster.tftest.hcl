@@ -185,6 +185,20 @@ run "private_cluster" {
     )
     error_message = "EBS CSI must use a cluster-scoped role instead of inheriting the node role."
   }
+
+  assert {
+    condition = output.oce_placement == {
+      controlPlane = {
+        nodeSelector = { "oce-role" = "control" }
+      }
+      runtime = {
+        gatewayNodeSelector     = { "oce-role" = "control" }
+        nodeSelector            = { "oce-role" = "agents" }
+        gatewayStorageClassName = "encrypted-gp3"
+      }
+    }
+    error_message = "The profile fragment must place each workload in its pool and select the target Gateway StorageClass."
+  }
 }
 
 run "restrict_operator_access_and_enable_strict_network_policy" {

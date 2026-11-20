@@ -10,8 +10,16 @@ permissions:
 
 jobs:
   validate:
+    name: Validate ${{ matrix.target }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aws-eks, azure-aks, gcp-gke]
+    defaults:
+      run:
+        working-directory: targets/${{ matrix.target }}
     env:
       TF_IN_AUTOMATION: "true"
       AWS_EC2_METADATA_DISABLED: "true"
@@ -28,6 +36,7 @@ jobs:
       - run: terraform validate
       - run: terraform test
       - name: Install kubectl for the credential policy test
+        if: matrix.target == 'aws-eks'
         run: |
           curl --proto '=https' --fail --silent --show-error --location \
             --output "$RUNNER_TEMP/kubectl" \
@@ -35,4 +44,6 @@ jobs:
           printf '%s  %s\n' a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989 "$RUNNER_TEMP/kubectl" | sha256sum --check
           chmod 0755 "$RUNNER_TEMP/kubectl"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - run: python3 -B -m unittest discover -s tests -v
+      - name: Test cluster handoff and system policies
+        if: matrix.target == 'aws-eks'
+        run: python3 -B -m unittest discover -s tests -v

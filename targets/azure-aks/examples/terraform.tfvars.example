@@ -1,0 +1,9 @@
+# Replace the example IDs and confirm machine and Kubernetes availability before enabling.
+enable_preview           = false
+subscription_id          = "00000000-0000-0000-0000-000000000001"
+tenant_id                = "00000000-0000-0000-0000-000000000002"
+operator_group_object_id = "00000000-0000-0000-0000-000000000003"
+location                 = "eastus2"
+cluster_name             = "oce-aks-example"
+kubernetes_version       = "1.36"
+vm_size                  = "Standard_D4s_v5"

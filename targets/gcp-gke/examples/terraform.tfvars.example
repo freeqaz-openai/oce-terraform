@@ -1,0 +1,13 @@
+# Replace the example values and opt in before planning.
+enable_preview = false
+
+project_id           = "example-oce-project"
+region               = "us-central1"
+zone                 = "us-central1-a"
+cluster_name         = "oce-preview"
+subnet_name          = "oce-preview-subnet"
+pod_range_name       = "oce-preview-pods"
+service_range_name   = "oce-preview-services"
+control_plane_cidr   = "172.16.1.0/28"
+operator_cidrs       = ["10.20.30.40/32"]
+node_service_account = "oce-gke-node@example-oce-project.iam.gserviceaccount.com"

@@ -53,7 +53,7 @@ The EKS inventory command and policy renderer require the credential owner to
 explicitly export `KUBECTL_KUBERC=false` in the operator shell. Set it only when
 the owner permits credentialed reads without kubectl preferences.
 
-From this Terraform checkout, use one of the following methods to collect the
+From the AWS EKS target directory, use one of the following methods to collect the
 API address inventory. Keep the same verified kubeconfig and context throughout.
 Use the inventory command when the matching OCE checkout supports
 `--inventory-eks`. Set `OCE_CHECKOUT` to that checkout's absolute path.
@@ -110,8 +110,8 @@ kube apply -f "$RUN_DIR/system-network-policies.json"
 
 Prepare any other controllers' DNS, API, webhook, and peer policies. In
 `terraform.tfvars`, change the existing assignment to
-`strict_network_policy = true` and keep it set for future plans. From this
-Terraform checkout, review and apply the saved transition plan.
+`strict_network_policy = true` and keep it set for future plans. From the AWS EKS
+target directory, review and apply the saved transition plan.
 
 ```bash
 terraform plan -out=strict.tfplan
