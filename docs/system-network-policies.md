@@ -64,8 +64,21 @@ node "$OCE_CHECKOUT/scripts/diagnose-kubernetes-prerequisites.ts" \
   > "$RUN_DIR/eks-addresses.json"
 ```
 
-If the selected OCE release predates that command, collect `API_CIDRS` with
-its [EKS setup guide](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/deploy/eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join).
+For a release that predates this command, bind the older procedure to the
+verified target in the same shell.
+
+```bash
+export KUBECONFIG="${KUBECONFIG_FILE:?Use the verified bootstrap kubeconfig}"
+cluster=$(terraform output -json oce_cluster)
+test "$(jq -er '.arn' <<<"$cluster")" = "$EKS_CLUSTER_ARN"
+AWS_REGION=$(jq -er '.region' <<<"$cluster")
+EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
+export AWS_REGION EKS_CLUSTER
+unset API_CIDRS
+```
+
+Run the [address collection commands](https://github.com/openclaw/openclaw-enterprise/blob/0ac6f863218c79c2c4143d552a0207a24d20f604/docs/guides/deploy/eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join)
+with these variables to set `API_CIDRS`.
 Then create the inventory for the renderer.
 
 ```bash
