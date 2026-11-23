@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Write a new site profile with placement from an applied Terraform target."""
+
+import argparse
+from contextlib import ExitStack
+from decimal import Decimal, DecimalException
+import json
+import os
+from pathlib import Path
+import secrets
+import subprocess
+
+STORAGE = "gatewayStorageClassName"
+FIELDS = {"controlPlane": ("nodeSelector",), "runtime": ("gatewayNodeSelector", "nodeSelector", STORAGE)}
+
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+
+def encode(value, indent=""):
+    # json.dumps does not support Decimal; converting to float would round unrelated site settings.
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(encode(item, indent) for item in value) + "]"
+    if isinstance(value, dict) and value:
+        nested = indent + "  "
+        pairs = (f"{nested}{json.dumps(k)}: {encode(v, nested)}" for k, v in value.items())
+        return "{\n" + ",\n".join(pairs) + "\n" + indent + "}"
+    return json.dumps(value, allow_nan=False)
+
+
+def parse_settings(data, *, placement=False):
+    source = "oce_placement" if placement else "Site profile"
+
+    def unique(pairs):
+        obj = dict(pairs)
+        require(len(obj) == len(pairs), f"{source} has duplicate JSON keys. Remove the duplicates.")
+        return obj
+
+    def invalid_constant(_):
+        raise ValueError
+
+    try:
+        doc = json.loads(
+            data, object_pairs_hook=unique, parse_int=Decimal, parse_float=Decimal,
+            parse_constant=invalid_constant,
+        )
+    except (ValueError, DecimalException, RecursionError):
+        raise SystemExit(f"{source} must contain valid JSON with limited nesting.") from None
+
+    def check_object(obj, path, fields):
+        require(isinstance(obj, dict), f"{path} must be a JSON object.")
+        if placement and obj.keys() - fields:
+            raise SystemExit(f"{path} contains unexpected fields.")
+
+    check_object(doc, source, FIELDS)
+    for section, fields in FIELDS.items():
+        path = f"{source}.{section}"
+        obj = doc.get(section)
+        check_object(obj, path, fields)
+        for field in fields:
+            name = f"{path}.{field}"
+            if field not in obj:
+                require(not placement, f"{name} is required.")
+                continue
+            value = obj[field]
+            if field == STORAGE:
+                require(isinstance(value, str), f"{name} must be a string.")
+                require(not placement or value.strip(), f"{name} must be a nonempty string.")
+            else:
+                require(isinstance(value, dict), f"{name} must be a JSON object.")
+                require(not placement or value, f"{name} must contain at least one selector.")
+                strings = all(isinstance(v, str) for v in value.values())
+                require(strings, f"{name} must contain only string selector values.")
+    return doc
+
+
+def terraform_placement(target):
+    require(target.is_dir(), "--target-dir must name an existing Terraform target directory.")
+    try:
+        data = subprocess.check_output(
+            ["terraform", f"-chdir={target.resolve()}", "output", "-json", "oce_placement"],
+            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+        )
+    except FileNotFoundError:
+        raise SystemExit("Terraform is required on PATH to read oce_placement.") from None
+    except subprocess.TimeoutExpired:
+        raise SystemExit("Terraform timed out after 60 seconds reading oce_placement. Check backend access.") from None
+    except (OSError, subprocess.CalledProcessError):
+        raise SystemExit("Terraform could not read oce_placement. Check backend access and the applied target.") from None
+    return parse_settings(data, placement=True)
+
+
+def merge(site, placement):
+    for section, fields in placement.items():
+        for key, expected in fields.items():
+            if key not in site[section]:
+                site[section][key] = expected
+                continue
+            existing = site[section][key]
+            conflict = f"Site profile.{section}.{key} conflicts with oce_placement."
+            if key == STORAGE:
+                require(existing == expected, f"{conflict} Reconcile the storage class.")
+            else:
+                for label, value in expected.items():
+                    require(existing.get(label, value) == value, f"{conflict} Reconcile the selectors.")
+                    existing[label] = value
+
+
+def prepare(args):
+    try:
+        site = parse_settings(args.input.read_bytes())
+    except OSError:
+        raise SystemExit("Could not read --input. Supply a readable site JSON file.") from None
+    name = args.output.name
+    require(name not in {"", ".."}, "--output must name a new file.")
+    with ExitStack() as cleanup:
+        directory = os.open(args.output.parent, os.O_RDONLY | os.O_DIRECTORY)
+        cleanup.callback(os.close, directory)
+        parent = os.fstat(directory)
+        require(parent.st_uid == os.geteuid() and not parent.st_mode & 0o077,
+                "--output needs an existing directory owned by you with mode 0700.")
+        if os.access(name, os.F_OK, dir_fd=directory, follow_symlinks=False):
+            raise FileExistsError
+        merge(site, terraform_placement(args.target_dir))
+
+        # Link only a complete file. A concurrent writer keeps its own output.
+        staged = f".oce-profile-{secrets.token_hex(16)}.tmp"
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+        cleanup.callback(os.unlink, staged, dir_fd=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(encode(site) + "\n")
+        os.link(staged, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-dir", required=True, type=Path, help="Applied Terraform target directory")
+    parser.add_argument("--input", required=True, type=Path, help="Site JSON file")
+    parser.add_argument("--output", required=True, type=Path, help="New profile input in a private directory")
+    os.umask(0o077)
+    try:
+        prepare(parser.parse_args())
+    except FileExistsError:
+        parser.exit(1, "--output already exists. Choose a new file.\n")
+    except OSError:
+        parser.exit(1, "Could not write --output. Check the parent directory, permissions, and free space.\n")
+    except RecursionError:
+        parser.exit(1, "Site profile is too deeply nested to write. Simplify its nesting.\n")

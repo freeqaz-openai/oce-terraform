@@ -178,7 +178,8 @@ after the checks pass. If a check fails, correct the reported condition and
 repeat the check before changing directories.
 
 Continue in the same shell with the [Terraform handoff in the OCE guide](https://github.com/openclaw/openclaw-enterprise/blob/fb03480f67004e4b2498ca72d124b458c04744ac/docs/guides/deploy/production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
-It maps the node selectors, StorageClass and current addresses into the profile.
+After refreshing the API addresses, use [Configure OCE placement](../../README.md#configure-oce-placement)
+to fill in node selectors and the StorageClass from the checked Terraform workspace.
 Use the installation procedure for your selected OCE release to prepare the
 namespace and Secrets, check prerequisites, and run `occ installation install`.
 Keep the receipt with the original run directory.
