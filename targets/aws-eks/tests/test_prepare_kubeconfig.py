@@ -1,6 +1,7 @@
 """Exercise the operator entry point with recorded-shaped AWS responses and real kubectl."""
 
 import base64
+from copy import deepcopy
 import json
 import os
 import shutil
@@ -298,12 +299,23 @@ class PrepareKubeconfigTest(unittest.TestCase):
         self.assertEqual(self.calls(), ["output", "describe", "generated", *phases])
 
     def test_checked_handoff_publishes_context_and_reports_node_placement(self):
+        self.add_hard_tainted_control_node()
+        self.nodes[1]["spec"] = {"taints": [{"key": "dedicated", "effect": "PreferNoSchedule"}]}
+        # All three nodes still have the system DaemonSets, including the hard-tainted node.
+        for workload in self.workloads:
+            status = workload.get("status", {})
+            if "desiredNumberScheduled" in status:
+                status.update(
+                    desiredNumberScheduled=3, numberReady=3,
+                    numberAvailable=3, updatedNumberScheduled=3,
+                )
+
         result = self.prepare("--check")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), CONTEXT)
         self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o600)
-        self.assertIn("Ready control nodes by zone: us-east-2a=1", result.stderr)
-        self.assertIn("Ready agents nodes by zone: us-east-2b=1", result.stderr)
+        self.assertIn("Ready control nodes by zone: us-east-2a=1", result.stderr.splitlines())
+        self.assertIn("Ready agents nodes by zone: us-east-2b=1", result.stderr.splitlines())
         self.assertEqual(self.calls(), ["output", "describe", "generated", "nodes", "workloads", "storage"])
 
     def test_check_requires_explicit_preference_opt_out_before_exec(self):
@@ -372,6 +384,25 @@ class PrepareKubeconfigTest(unittest.TestCase):
     def test_check_refuses_unready_agent_pool(self):
         self.nodes[1]["status"]["conditions"][0]["status"] = "False"
         self.assert_blocked("No Ready, schedulable agents node", ["nodes"])
+
+    def test_check_refuses_control_pool_with_only_a_no_schedule_node(self):
+        self.nodes[0]["spec"] = {"taints": [{"key": "dedicated", "effect": "NoSchedule"}]}
+        self.assert_blocked("No Ready, schedulable control node", ["nodes"])
+
+    def test_check_refuses_agent_pool_with_only_a_no_execute_node(self):
+        self.nodes[1]["spec"] = {"taints": [{"key": "dedicated", "effect": "NoExecute"}]}
+        self.assert_blocked("No Ready, schedulable agents node", ["nodes"])
+
+    def add_hard_tainted_control_node(self):
+        node = deepcopy(self.nodes[0])
+        node["metadata"]["labels"]["topology.kubernetes.io/zone"] = "us-east-2b"
+        node["spec"] = {"taints": [{"key": "dedicated", "effect": "NoSchedule"}]}
+        self.nodes.append(node)
+
+    def test_check_requires_daemonsets_to_cover_hard_tainted_nodes(self):
+        self.add_hard_tainted_control_node()
+        # The fixture's DaemonSets cover only two of the three Ready nodes.
+        self.assert_blocked("daemonset/aws-node rollout is incomplete", ["nodes", "workloads"])
 
     def test_check_refuses_cni_in_standard_mode(self):
         self.workloads[0]["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] = "standard"

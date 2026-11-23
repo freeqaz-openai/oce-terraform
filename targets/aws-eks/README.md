@@ -149,10 +149,14 @@ credentials in the protected OCE inputs.
 
 ## 4. Check the foundation and install OCE
 
-Run the foundation check from the AWS EKS target directory using the operator role. It checks
-the EKS identity and CA, Ready schedulable nodes in both pools, strict VPC CNI
-settings, add-on rollouts, and the encrypted default StorageClass. Review the
-reported node counts by zone against your volume placement.
+Run the foundation check from the AWS EKS target directory using the operator
+role. It checks EKS identity and CA, Ready nodes in both pools, strict VPC CNI
+settings, add-on rollouts, and the encrypted default StorageClass.
+
+Compare eligible nodes by zone with your volume placement. The check excludes
+cordoned nodes and nodes with `NoSchedule` or `NoExecute` taints.
+`PreferNoSchedule` is a preference, so those nodes still count. These counts
+cannot guarantee that a Pod will start or a volume will bind.
 
 The check requires the credential owner's permission to use kubectl without
 preferences. For an authorized session, run `export KUBECTL_KUBERC=false` in
