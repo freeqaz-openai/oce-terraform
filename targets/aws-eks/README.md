@@ -177,9 +177,35 @@ The command writes the kubeconfig directly to the protected OCE input directory
 after the checks pass. If a check fails, correct the reported condition and
 repeat the check before changing directories.
 
-Continue in the same shell with the [Terraform handoff in the OCE guide](https://github.com/openclaw/openclaw-enterprise/blob/fb03480f67004e4b2498ca72d124b458c04744ac/docs/guides/deploy/production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
-After refreshing the API addresses, use [Configure OCE placement](../../README.md#configure-oce-placement)
-to fill in node selectors and the StorageClass from the checked Terraform workspace.
+Continue in the same shell with the [Terraform handoff in the OCE guide](https://github.com/openclaw/openclaw-enterprise/blob/52457c4472bf1a798df6c5fd3f2ef0b01df58f31/docs/guides/deploy/production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
+After both node pools are Ready, follow the linked address refresh procedure.
+Review API egress and webhook ingress separately. Keep the fresh `inventory`
+value in this Bash session.
+
+Save your [site settings](../../README.md#configure-oce-placement) in
+`$OCC_INPUT_DIRECTORY/site.json`. Omit `controlPlane.clusterCidrs` to use
+the reviewed API addresses. Create the profile input from the OCE checkout.
+
+```bash
+"${TF_TARGET_DIR:?}/../../scripts/prepare-profile" --target-dir "$TF_TARGET_DIR" \
+  --input "${OCC_INPUT_DIRECTORY:?}/site.json" \
+  --eks-inventory <(printf '%s\n' "${inventory:?Refresh and review the EKS addresses first}") \
+  --output "$OCC_INPUT_DIRECTORY/profile-input.json"
+```
+
+The helper reads `oce_placement` and `oce_cluster` from the selected
+Terraform workspace. It checks the inventory cluster ARN and context against
+the applied cluster ARN and its prepared `oce-<name>` alias. It copies only
+distinct private IPv4 `/32` API addresses. If your site already lists
+addresses, the sets must match. The helper does not copy webhook addresses or
+apply policies.
+
+The helper validates the timestamp format but cannot prove the addresses are
+current. Repeat discovery after a cluster change, including recreation under
+the same name. If your
+release lacks `--inventory-eks`, set `controlPlane.clusterCidrs` yourself and
+omit `--eks-inventory`.
+
 Use the installation procedure for your selected OCE release to prepare the
 namespace and Secrets, check prerequisites, and run `occ installation install`.
 Keep the receipt with the original run directory.

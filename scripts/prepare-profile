@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""Write a new site profile with placement from an applied Terraform target."""
+"""Prepare OCE placement and, optionally, EKS API egress for a new site profile."""
 
 import argparse
 from contextlib import ExitStack
+from datetime import datetime
 from decimal import Decimal, DecimalException
+from ipaddress import IPv4Address, IPv4Network
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 
 STORAGE = "gatewayStorageClassName"
 FIELDS = {"controlPlane": ("nodeSelector",), "runtime": ("gatewayNodeSelector", "nodeSelector", STORAGE)}
+EKS_CLUSTER_ARN = re.compile(
+    r"arn:aws:eks:(?P<region>[a-z]{2}-[a-z]+-[0-9]+):[0-9]{12}:"
+    r"cluster/(?P<name>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+)
+PRIVATE_VPC_RANGES = tuple(
+    IPv4Network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
 
 
 def require(condition, message):
@@ -32,9 +42,7 @@ def encode(value, indent=""):
     return json.dumps(value, allow_nan=False)
 
 
-def parse_settings(data, *, placement=False):
-    source = "oce_placement" if placement else "Site profile"
-
+def parse_json(data, source):
     def unique(pairs):
         obj = dict(pairs)
         require(len(obj) == len(pairs), f"{source} has duplicate JSON keys. Remove the duplicates.")
@@ -44,12 +52,17 @@ def parse_settings(data, *, placement=False):
         raise ValueError
 
     try:
-        doc = json.loads(
+        return json.loads(
             data, object_pairs_hook=unique, parse_int=Decimal, parse_float=Decimal,
             parse_constant=invalid_constant,
         )
     except (ValueError, DecimalException, RecursionError):
         raise SystemExit(f"{source} must contain valid JSON with limited nesting.") from None
+
+
+def parse_settings(data, *, placement=False):
+    source = "oce_placement" if placement else "Site profile"
+    doc = parse_json(data, source)
 
     def check_object(obj, path, fields):
         require(isinstance(obj, dict), f"{path} must be a JSON object.")
@@ -78,20 +91,83 @@ def parse_settings(data, *, placement=False):
     return doc
 
 
-def terraform_placement(target):
-    require(target.is_dir(), "--target-dir must name an existing Terraform target directory.")
+def terraform_output(target, name):
     try:
-        data = subprocess.check_output(
-            ["terraform", f"-chdir={target.resolve()}", "output", "-json", "oce_placement"],
+        return subprocess.check_output(
+            ["terraform", f"-chdir={target}", "output", "-json", name],
             stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
         )
     except FileNotFoundError:
-        raise SystemExit("Terraform is required on PATH to read oce_placement.") from None
+        raise SystemExit(f"Terraform is required on PATH to read {name}.") from None
     except subprocess.TimeoutExpired:
-        raise SystemExit("Terraform timed out after 60 seconds reading oce_placement. Check backend access.") from None
+        raise SystemExit(f"Terraform timed out after 60 seconds reading {name}. Check backend access.") from None
     except (OSError, subprocess.CalledProcessError):
-        raise SystemExit("Terraform could not read oce_placement. Check backend access and the applied target.") from None
-    return parse_settings(data, placement=True)
+        raise SystemExit(f"Terraform could not read {name}. Check backend access and the applied target.") from None
+
+
+def is_private_host_cidr(value):
+    if not isinstance(value, str) or not value.endswith("/32"):
+        return False
+    try:
+        address = IPv4Address(value[:-3])
+    except ValueError:
+        return False
+    return value == f"{address}/32" and any(address in network for network in PRIVATE_VPC_RANGES)
+
+
+def is_inventory_timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", value
+    ):
+        return False
+    try:
+        datetime.fromisoformat(value[:-1])
+    except ValueError:
+        return False
+    return True
+
+
+def merge_eks_inventory(control_plane, path, target):
+    try:
+        inventory = parse_json(path.read_bytes(), "EKS inventory")
+    except OSError:
+        raise SystemExit("Could not read --eks-inventory. Supply a readable OCE --inventory-eks JSON file.") from None
+    require(isinstance(inventory, dict) and inventory,
+            "EKS inventory must be a nonempty JSON object from OCE --inventory-eks.")
+    eks = inventory.get("eks")
+    require(isinstance(eks, dict) and isinstance(eks.get("clusterArn"), str) and eks["clusterArn"],
+            "EKS inventory needs eks.clusterArn. Regenerate it with OCE --inventory-eks.")
+    require(is_inventory_timestamp(inventory.get("checkedAt")),
+            "EKS inventory needs a valid UTC checkedAt timestamp. Regenerate it with OCE --inventory-eks.")
+
+    cidrs = inventory.get("apiCidrs")
+    require(
+        isinstance(cidrs, list) and cidrs and all(map(is_private_host_cidr, cidrs)) and len(set(cidrs)) == len(cidrs),
+        "EKS inventory apiCidrs must contain distinct private IPv4 /32 addresses. Refresh and review the inventory.",
+    )
+
+    existing = control_plane.get("clusterCidrs", cidrs)
+    require(
+        isinstance(existing, list) and len(existing) == len(cidrs)
+        and all(isinstance(peer, str) for peer in existing) and set(existing) == set(cidrs),
+        "Site profile.controlPlane.clusterCidrs conflicts with EKS inventory apiCidrs. "
+        "Compare the two lists before you change the site file.",
+    )
+
+    cluster = parse_json(terraform_output(target, "oce_cluster"), "oce_cluster")
+    arn = cluster.get("arn") if isinstance(cluster, dict) else None
+    match = EKS_CLUSTER_ARN.fullmatch(arn) if isinstance(arn, str) else None
+    require(
+        match and cluster.get("region") == match["region"] and cluster.get("name") == match["name"],
+        "oce_cluster must identify an applied AWS EKS cluster with matching ARN, region, and name. Check --target-dir.",
+    )
+    require(
+        eks["clusterArn"] == arn and inventory.get("context") == f"oce-{match['name']}",
+        "EKS inventory cluster ARN and context must match the applied cluster and prepare-kubeconfig alias. "
+        "Regenerate it for this target.",
+    )
+
+    control_plane.setdefault("clusterCidrs", cidrs)
 
 
 def merge(site, placement):
@@ -125,7 +201,11 @@ def prepare(args):
                 "--output needs an existing directory owned by you with mode 0700.")
         if os.access(name, os.F_OK, dir_fd=directory, follow_symlinks=False):
             raise FileExistsError
-        merge(site, terraform_placement(args.target_dir))
+        require(args.target_dir.is_dir(), "--target-dir must name an existing Terraform target directory.")
+        target = args.target_dir.resolve()
+        if args.eks_inventory is not None:
+            merge_eks_inventory(site["controlPlane"], args.eks_inventory, target)
+        merge(site, parse_settings(terraform_output(target, "oce_placement"), placement=True))
 
         # Link only a complete file. A concurrent writer keeps its own output.
         staged = f".oce-profile-{secrets.token_hex(16)}.tmp"
@@ -141,6 +221,8 @@ if __name__ == "__main__":
     parser.add_argument("--target-dir", required=True, type=Path, help="Applied Terraform target directory")
     parser.add_argument("--input", required=True, type=Path, help="Site JSON file")
     parser.add_argument("--output", required=True, type=Path, help="New profile input in a private directory")
+    parser.add_argument("--eks-inventory", type=Path, metavar="FILE",
+                        help="OCE --inventory-eks JSON file whose addresses you reviewed for this target")
     os.umask(0o077)
     try:
         prepare(parser.parse_args())

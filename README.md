@@ -25,8 +25,9 @@ Keep a separate protected Terraform state and backend key for each target and in
 
 Use the target directory and Terraform workspace of the cluster you checked.
 Prepare an OCE site JSON file with `controlPlane` and `runtime` objects. Set the
-current Kubernetes API CIDRs and other site settings. Omit example placement
-values you don't intend to use.
+current Kubernetes API CIDRs and other site settings. On EKS, you can also
+[import the reviewed API addresses](targets/aws-eks/README.md#4-check-the-foundation-and-install-oce)
+with `--eks-inventory`. Omit example placement values you don't intend to use.
 
 From this repository's root, run the helper with Python 3 and Terraform on your
 path. Choose a new file in a private directory you own.
